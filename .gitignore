@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+wiki.jsonl
+wiki_output/
+*.bz2
+index_dir/
+bench_index/
+wiki_index/

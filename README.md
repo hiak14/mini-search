@@ -66,29 +66,31 @@ Three files, written by `indexer.py`:
 
 ### Design notes
 
-SPIMI rather than a single in-memory dict: peak memory is bounded by the block
-size instead of the corpus size, at the cost of a merge pass. The index test
-forces a two-posting block cap to exercise the merge path on a corpus whose
-postings are known by hand.
+SPIMI keeps peak memory in check by limiting it to the block size, not the size 
+of the whole corpus. The tradeoff is that you have to merge blocks at the end, 
+but that's manageable. The index test deliberately splits postings into just 
+two blocks—this way, I can see the merge in action on a small, hand-checked set.
 
-Gap + VByte rather than raw integers or a bit-level coder: doc ids in a
-posting list are strictly increasing, so gaps are small, and VByte encodes
-small numbers in one byte. It gets most of the compression of Elias-gamma or
-PForDelta while staying byte-aligned and fast to decode. Measured here it
-removes 72.7% of the postings bytes.
+For compressing postings, I use gap encoding with VByte instead of storing raw 
+integers or squeezing everything down to bits. Since doc IDs always go up, the 
+differences (gaps) between them are small. VByte packs small numbers into one byte 
+fast, and you don’t need weird bit-level tricks. You get almost as much compression
+as things like Elias-gamma or PForDelta, but it's simpler and stays byte-aligned,
+making it quick to decode. In my tests, this got rid of about 72.7% of the bytes in postings.
 
-Posting lists with df >= 16 get sqrt(n) skip pointers, so AND queries can jump
-over non-matching stretches. This is why boolean latency (p50 = 1.32 ms) stays
-below ranked latency over the same data.
+If a term shows up in at least 16 documents, I add sqrt(n) skip pointers to its posting 
+list. This lets AND queries leap over long stretches of irrelevant docs, so Boolean 
+queries run fast (the median Boolean time is 1.32 ms-always snappier than ranked search 
+on the same data).
 
 Stopword removal is a toggle, on by default. It shrinks the index and helps
 ranked search, but makes pure-stopword phrases ("to be or not to be")
 unsearchable. The analyzer keeps raw token positions rather than post-filter
 positions, so phrase queries over content words stay correct either way.
 
-Ranked retrieval is document-at-a-time with a bounded min-heap for the top-k.
-DAAT pairs naturally with doc_id-ordered posting lists: one forward pass, no
-random access, and per-document length normalisation is trivial to apply.
+Ranked retrieval is a straight doc-at-a-time loop with a bounded min-heap to stash 
+the top k docs. Posting lists are sorted by doc_id, so you just walk forward; no random 
+jumping around, and normalizing for document length is simple.
 
 ## Benchmark results
 
@@ -127,13 +129,13 @@ Retrieval quality (top-10, 12 topic queries):
 | BM25 | 1.000 | 0.004 | 1.000 |
 | TF-IDF | 1.000 | 0.004 | 1.000 |
 
-Two caveats on the quality numbers. BM25 and TF-IDF tie because the synthetic
-topics are cleanly separable; any reasonable ranker puts the right documents
-in the top 10. BM25's advantage shows on graded relevance, which this
-generator does not produce. And MAP is low by construction, not failure: each
-topic has ~2,500 relevant documents but only 10 are retrieved, so average
-precision is recall-bounded at roughly k / |relevant|. P@10 and nDCG@10 are
-the meaningful signals at this k.
+There are a couple things to watch out for with the quality metrics. BM25 and TF-IDF “tie” 
+because the test topics are intentionally easy—any solid ranker will find the right docs. 
+BM25 really pulls ahead when you have graded relevance, but this test setup doesn’t generate 
+that. Also, MAP (Mean Average Precision) shows up low—not because the system can’t rank, but
+because there are a ton of relevant docs (~2,500 per topic), and only 10 are retrieved per 
+query. So, average precision can’t get higher than about k divided by the number of relevant
+docs. For this scenario, P@10 and nDCG@10 actually matter most.
 
 BM25 k1/b sweep, nDCG@10:
 
@@ -143,33 +145,19 @@ BM25 k1/b sweep, nDCG@10:
 | 1.5 | 0.042 | 1.000 | 1.000 | 1.000 |
 | 2.0 | 0.042 | 1.000 | 1.000 | 1.000 |
 
-This is what the spam documents are for. With length normalisation off
-(b = 0), the long keyword-stuffed distractors, which contain every topic's
-vocabulary many times over, flood the top 10 and nDCG collapses to 0.042. With
-b >= 0.5, BM25 divides out the document-length advantage and the spam drops
-away. This is the failure mode the b parameter exists to fix, and why plain
-term-frequency ranking is not enough.
+Spam documents are in the test set to check length normalization. 
+If you turn off normalization (b = 0), those long, keyword-stuffed spam docs 
+blast into the top 10, and nDCG sinks to 0.042. Once b is 0.5 or higher, 
+BM25 cancels out the length advantage and the spam falls off the list. 
+That's exactly why BM25 has this b parameter—and why you can’t rely on plain term-frequency ranking.
 
 ## Running on real data
 
 The synthetic corpus exists so the repo runs without a large download. To try
 mini-search on real text, index Simple English Wikipedia (240k+ articles).
 
-The README previously suggested pulling the raw XML dump and running it
-through [wikiextractor](https://github.com/attardi/wikiextractor). On Windows
-that path currently breaks in three separate ways: wikiextractor's regex
-module uses inline `(?i)` flags that Python 3.11+ rejects as a hard error, and
-its multiprocessing is hardcoded to `fork`, which does not exist on Windows
-(only Linux/macOS have it) — switching to `spawn` then fails too, because the
-reducer process tries to pickle an open file handle across the process
-boundary, which `spawn` cannot do. None of this is a mini-search bug; it is
-wikiextractor's Unix-only process model colliding with Windows. If you're on
-Linux/macOS, or run this inside WSL, the original wikiextractor command
-should work unmodified.
-
-The simpler, cross-platform fix: skip wikiextractor and pull an already-parsed
-copy of Simple English Wikipedia from Hugging Face's `datasets` library. It
-returns the same fields mini-search expects (`id`, `title`, `url`, `text`),
+Pull an already-parsed copy of Simple English Wikipedia from Hugging Face's `datasets` library. 
+It returns the same fields mini-search expects (`id`, `title`, `url`, `text`),
 with no XML parsing, no extraction step, and no multiprocessing at all.
 
 ```bash
@@ -255,14 +243,7 @@ python -m unittest discover -s tests -v
 
 ## Limitations
 
-- The headline benchmark numbers are on a synthetic corpus. It is structured
-  to give meaningful ranking behaviour (topic vocabularies, a Zipfian
-  background tail, adversarial spam) but it is not natural text. See "Running
-  on real data" above for results on real Wikipedia articles.
-- The dictionary loads fully into memory (0.09 MB on the synthetic corpus;
-  larger on real Wikipedia). A very large vocabulary would want an on-disk
-  term dictionary.
-- Ranked retrieval is exhaustive DAAT. WAND/MaxScore dynamic pruning would cut
-  tail latency on large corpora; the `max_term_score` hook in `ranker.py` is
-  in place for it.
+-The main benchmark uses a synthetic dataset, designed to test ranking (with topic vocab, a Zipf-like tail, and tricky spam examples), but it’s not real natural language. For results with -real Wikipedia, see “Running on real data” above.
+-The term dictionary loads fully into memory. That’s tiny for the toy set (0.09 MB), but gets bigger for real Wikipedia. If the vocab gets huge, you’d want to swap to an on-disk dictionary.
+-Ranked retrieval does a full DAAT pass. On big corpora, smarter dynamic pruning (WAND/MaxScore) would speed up long-tail queries. There's a hook—max_term_score—in ranker.py ready for this.
 

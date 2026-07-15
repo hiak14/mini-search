@@ -57,7 +57,7 @@ query --> analyzer --> query processing <-- index reader
 
 Three files, written by `indexer.py`:
 
-- `postings.bin`: for each term, in dictionary order: the document frequency,
+- `postings.b in`: for each term, in dictionary order: the document frequency,
   then per posting the gap-from-previous doc_id, term frequency, position
   count, and gap-encoded positions, all VByte-coded.
 - `dict.bin`: pickled map of term -> (df, byte offset, byte length), so any
@@ -74,9 +74,7 @@ two blocks—this way, I can see the merge in action on a small, hand-checked se
 For compressing postings, I use gap encoding with VByte instead of storing raw 
 integers or squeezing everything down to bits. Since doc IDs always go up, the 
 differences (gaps) between them are small. VByte packs small numbers into one byte 
-fast, and you don’t need weird bit-level tricks. You get almost as much compression
-as things like Elias-gamma or PForDelta, but it's simpler and stays byte-aligned,
-making it quick to decode. In my tests, this got rid of about 72.7% of the bytes in postings.
+fast, and you don’t need weird bit-level tricks. In my tests, this got rid of about 72.7% of the bytes in postings.
 
 If a term shows up in at least 16 documents, I add sqrt(n) skip pointers to its posting 
 list. This lets AND queries leap over long stretches of irrelevant docs, so Boolean 
@@ -225,8 +223,7 @@ smoothly rather than jumping around:
 
 Vocabulary size jumps from 4,271 terms on the synthetic corpus to 680,151 on
 real Wikipedia — real language carries far more lexical diversity (proper
-nouns, rare terms, foreign words) than a generated topic corpus, and this is
-reflected directly in dictionary size.
+nouns, rare terms, foreign words) than a generated topic corpus.
 
 ## Tests
 
